@@ -1,4 +1,4 @@
-"""FastAPI 入口：场景 / 测点 / 分析运行 / 快照 / 单点遮挡追查。"""
+"""FastAPI 入口：场景 / 测点 / 高度阶段 / 分析运行 / 快照 / 单点遮挡追查。"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -14,6 +14,7 @@ from .analysis import MeasurePointGeom, analyze_point
 from .db import Base, engine, get_db
 from .geometry import BuildingGeom, build_scene
 from .solar import enu_to_model, sun_vector_enu, solar_positions
+from .stages import resolve_top_height, validate_height_stages
 from .geometry import cast_sun_ray
 import pandas as pd
 
@@ -69,25 +70,100 @@ def _load_scene_bundle(db: Session, scene_id: int):
     return s, buildings, points
 
 
-def _bundle_payload(s, buildings, points) -> dict:
-    """场景完整 JSON（即快照内容，前端渲染也用它）。"""
+def _stage_json(st) -> dict:
+    return {"effective_date": st.effective_date.isoformat()
+            if hasattr(st.effective_date, "isoformat") else str(st.effective_date),
+            "top_height": st.top_height}
+
+
+def _building_json(b, as_of=None) -> dict:
+    """建筑 JSON。as_of 给定（运行快照）时 top_height 为该日期实际采用高度，
+    并记录采用阶段；否则 top_height 为建筑原高度（实时场景视图）。"""
+    stages = sorted((getattr(b, "height_stages", None) or []),
+                    key=lambda s: s.effective_date)
+    top, applied = (resolve_top_height(b.top_height, stages, as_of)
+                    if as_of is not None else (b.top_height, None))
     return {
+        "id": b.id, "name": b.name, "kind": b.kind, "color": b.color,
+        "footprint": list(to_shape(b.footprint).exterior.coords)[:-1],
+        "base_height": b.base_height,
+        "top_height": top,                    # as_of 时 = 实际采用高度
+        "base_top_height": b.top_height,      # 建筑原高度（未应用阶段时）
+        "height_stages": [_stage_json(s) for s in stages],
+        "applied_stage": _stage_json(applied) if applied else None,
+    }
+
+
+def _bundle_payload(s, buildings, points, as_of=None) -> dict:
+    """场景完整 JSON（即快照内容，前端渲染也用它）。
+
+    as_of 为分析日期时：各建筑 top_height 解析为该日期已生效阶段的实际
+    高度，并写入 applied_stage / resolved_for_date，保证旧运行可追查原体量。
+    """
+    payload = {
         "scene": _scene_json(s),
-        "buildings": [{
-            "id": b.id, "name": b.name, "kind": b.kind, "color": b.color,
-            "footprint": list(to_shape(b.footprint).exterior.coords)[:-1],
-            "base_height": b.base_height, "top_height": b.top_height,
-        } for b in buildings],
+        "buildings": [_building_json(b, as_of) for b in buildings],
         "points": [{
             "id": p.id, "name": p.name, "window_id": p.window_id,
             "position": list(to_shape(p.geom).coords[0]), "normal": p.normal,
         } for p in points],
     }
+    if as_of is not None:
+        payload["resolved_for_date"] = as_of.isoformat()
+    return payload
 
 
 @app.get("/api/scenes/{scene_id}")
 def get_scene(scene_id: int, db: Session = Depends(get_db)):
     return _bundle_payload(*_load_scene_bundle(db, scene_id))
+
+
+# ---------- 建筑高度阶段 ----------
+
+class StageIn(BaseModel):
+    effective_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    top_height: float
+
+
+class StagesPut(BaseModel):
+    stages: list[StageIn]  # 整体替换该建筑的阶段集合
+
+
+def _get_building(db: Session, building_id: int) -> models.Building:
+    b = db.get(models.Building, building_id)
+    if not b:
+        raise HTTPException(404, "建筑不存在")
+    return b
+
+
+@app.get("/api/buildings/{building_id}/stages")
+def list_stages(building_id: int, db: Session = Depends(get_db)):
+    b = _get_building(db, building_id)
+    return {"building_id": b.id, "name": b.name,
+            "base_height": b.base_height, "top_height": b.top_height,
+            "stages": [_stage_json(s) for s in b.height_stages]}
+
+
+@app.put("/api/buildings/{building_id}/stages")
+def put_stages(building_id: int, req: StagesPut, db: Session = Depends(get_db)):
+    """整体替换某建筑的高度阶段；日期重复或高度非法时拒绝（400）。"""
+    b = _get_building(db, building_id)
+    entries = []
+    for st in req.stages:
+        try:
+            eff = datetime.strptime(st.effective_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(400, f"非法生效日期：{st.effective_date}")
+        entries.append((eff, st.top_height))
+    try:
+        validate_height_stages(entries, b.base_height)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    b.height_stages = [models.HeightStage(effective_date=eff, top_height=h)
+                       for eff, h in entries]
+    db.commit()
+    return {"building_id": b.id,
+            "stages": [_stage_json(s) for s in b.height_stages]}
 
 
 # ---------- 分析 ----------
@@ -99,12 +175,18 @@ class RunRequest(BaseModel):
     point_ids: list[int] | None = None  # 缺省 = 场景全部测点
 
 
-def _geom_from_bundle(buildings, points):
-    geoms = [BuildingGeom(name=b.name,
-                          footprint=[tuple(c) for c in
-                                     to_shape(b.footprint).exterior.coords][:-1],
-                          base_height=b.base_height, top_height=b.top_height)
-             for b in buildings]
+def _geom_from_bundle(buildings, points, as_of=None):
+    """由 ORM 行重建几何。as_of 给定则按高度阶段解析各建筑实际顶高。"""
+    geoms = []
+    for b in buildings:
+        top = b.top_height
+        if as_of is not None:
+            top, _ = resolve_top_height(
+                b.top_height, getattr(b, "height_stages", None) or [], as_of)
+        geoms.append(BuildingGeom(
+            name=b.name,
+            footprint=[tuple(c) for c in to_shape(b.footprint).exterior.coords][:-1],
+            base_height=b.base_height, top_height=top))
     built = build_scene(geoms)
     pts = [MeasurePointGeom(id=str(p.id), name=p.name,
                             position=tuple(to_shape(p.geom).coords[0]),
@@ -120,19 +202,26 @@ def run_analysis(req: RunRequest, db: Session = Depends(get_db)):
         points = [p for p in points if p.id in req.point_ids]
         if not points:
             raise HTTPException(400, "point_ids 无匹配测点")
-    # 1) 快照先行：结果关联快照，场景后续被改动也不影响追溯
-    payload = _bundle_payload(s, buildings, points)
+    run_date = datetime.strptime(req.date, "%Y-%m-%d").date()
+    # 1) 快照先行：结果关联快照，场景后续被改动也不影响追溯。
+    #    快照内各建筑 top_height 为运行日期实际采用高度（含高度阶段），
+    #    applied_stage 记录命中的阶段，旧运行永远可追查当时体量。
+    payload = _bundle_payload(s, buildings, points, as_of=run_date)
     snap = models.Snapshot(scene_id=s.id, payload=payload)
     db.add(snap)
     db.flush()
     run = models.Run(scene_id=s.id, snapshot_id=snap.id,
-                     run_date=datetime.strptime(req.date, "%Y-%m-%d").date(),
+                     run_date=run_date,
                      step_minutes=req.step_minutes,
-                     params={"point_ids": [p.id for p in points]},
+                     params={"point_ids": [p.id for p in points],
+                             "height_stages_applied": {
+                                 bj["name"]: bj["applied_stage"]
+                                 for bj in payload["buildings"]
+                                 if bj["applied_stage"]}},
                      disclaimer=DISCLAIMER)
     db.add(run)
     db.flush()
-    built, pts = _geom_from_bundle(buildings, points)
+    built, pts = _geom_from_bundle(buildings, points, as_of=run_date)
     for pt in pts:
         r = analyze_point(built, pt, latitude=s.latitude, longitude=s.longitude,
                           tz=s.timezone, date=req.date,
@@ -156,6 +245,7 @@ def get_run(run_id: int, db: Session = Depends(get_db)):
         "run_id": run.id, "scene_id": run.scene_id,
         "snapshot_id": run.snapshot_id, "date": str(run.run_date),
         "step_minutes": run.step_minutes, "disclaimer": run.disclaimer,
+        "params": run.params,
         "results": [{
             "point_id": r.point_id,
             "summary": r.summary,

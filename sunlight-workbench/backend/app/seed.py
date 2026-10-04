@@ -3,9 +3,13 @@
 - S1 邻楼遮挡：目标住宅楼 + 正南板式邻楼 + 东南塔楼，用于冬夏对比算例。
 - S2 旋转场景：S1 全部几何逆时针旋转 30° 且 north_offset_deg=30，
   物理情形与 S1 完全等价，用于核对坐标旋转口径（两场景同日期结果应一致）。
+- B2_东南塔楼 带高度阶段（2026-06-01 起 45m→60m，模拟拟建加高），
+  用于演示"生效日前后同一点采用不同高度"；S2 同步配置以保持物理等价。
 所有坐标为模型局部米制坐标；经纬度/时区/朝北偏角统一挂在场景上。
 """
 from __future__ import annotations
+
+from datetime import date
 
 from geoalchemy2.shape import from_shape
 from shapely.geometry import Point, Polygon
@@ -31,7 +35,10 @@ def _base_buildings():
              color="#8ea3b8"),
         dict(name="B2_东南塔楼", kind="building",
              footprint=box_footprint(35, -15, 18, 18), base_height=0, top_height=45,
-             color="#7e93a8"),
+             color="#7e93a8",
+             # 拟建加高：2026-06-01（含）起按 60 m 体量参与遮挡
+             height_stages=[dict(effective_date=date(2026, 6, 1),
+                                 top_height=60.0)]),
     ]
 
 
@@ -93,6 +100,10 @@ def seed_database(db) -> list[int]:
                 color=b["color"])
             db.add(row)
             db.flush()
+            for st in b.get("height_stages", []):
+                db.add(models.HeightStage(
+                    building_id=row.id, effective_date=st["effective_date"],
+                    top_height=st["top_height"]))
             bmap[b["name"]] = row.id
         for p in spec["points"]:
             db.add(models.MeasurePoint(

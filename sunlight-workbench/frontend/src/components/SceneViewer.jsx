@@ -42,6 +42,21 @@ function MeasurePoint({ p, status, selected, onClick }) {
   )
 }
 
+/** 高度阶段说明标签：仅挂在配置了阶段的建筑上，显示当前日期实际采用的
+    顶高及其来源（命中阶段 / 原高度未生效）。b.top_height 已由上层按日期解析。 */
+function StageLabel({ b }) {
+  const cx = b.footprint.reduce((s, [x]) => s + x, 0) / b.footprint.length
+  const cy = b.footprint.reduce((s, [, y]) => s + y, 0) / b.footprint.length
+  const text = b.applied_stage
+    ? `${b.name} ${b.top_height} m（${b.applied_stage.effective_date} 起阶段）`
+    : `${b.name} ${b.top_height} m（原高度·阶段未生效）`
+  return (
+    <Html position={toThree([cx, cy, b.top_height + 3])} center>
+      <div className="stage-label">{text}</div>
+    </Html>
+  )
+}
+
 /** 真北箭头：模型 +y 轴（= 场景声明的模型北），红色；真北由 north_offset 决定，
     场景页已统一口径，这里画模型北并标注偏角。 */
 function NorthArrow() {
@@ -72,6 +87,9 @@ export default function SceneViewer({
         <Building key={b.id} b={b}
           highlighted={highlightOccluder === b.name}
           onClick={onSelectBuilding} />
+      ))}
+      {payload?.buildings.filter((b) => b.height_stages?.length).map((b) => (
+        <StageLabel key={`stage-${b.id}`} b={b} />
       ))}
       {payload?.points.map((p) => (
         <MeasurePoint key={p.id} p={p}

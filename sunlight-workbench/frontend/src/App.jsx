@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { api } from './api.js'
 import SceneViewer from './components/SceneViewer.jsx'
 import ResultsPanel from './components/ResultsPanel.jsx'
+import StageEditor from './components/StageEditor.jsx'
+import { resolvePayloadForDate } from './util.js'
 
 const DATES = ['2026-01-15', '2026-03-20', '2026-07-15'] // 跨冬夏算例日期
 
@@ -57,6 +59,13 @@ export default function App() {
 
   const selectedResult = run?.results.find((r) => r.point_id === selectedPointId)
 
+  // 三维展示用体量：实时场景按所选日期解析高度阶段；快照保持运行日期体量
+  const displayPayload = useMemo(() => resolvePayloadForDate(payload, date), [payload, date])
+  const stageDate = payload?.resolved_for_date ?? date
+  const stageNotes = useMemo(() =>
+    (displayPayload?.buildings ?? []).filter((b) => b.height_stages?.length),
+    [displayPayload])
+
   const doTrace = async (pointId) => {
     setTrace(await api.trace(run.run_id, pointId))
   }
@@ -88,6 +97,29 @@ export default function App() {
         </select>
         <button disabled={!sceneId} onClick={doRun}>运行当日分析（5min 步长）</button>
         {run && <div className="muted small">run #{run.run_id} · 快照 #{run.snapshot_id}</div>}
+        {stageNotes.length > 0 && (
+          <div className="meta">
+            <b>高度阶段（{stageDate} 口径）</b>
+            {stageNotes.map((b) => (
+              <div key={b.id}>
+                {b.name}：{b.top_height} m
+                {b.applied_stage
+                  ? `（${b.applied_stage.effective_date} 起阶段，原 ${b.base_top_height} m）`
+                  : `（原高度，首个阶段 ${b.height_stages[0].effective_date} 未生效）`}
+              </div>
+            ))}
+          </div>
+        )}
+        {payload && !payload.resolved_for_date && (
+          <StageEditor buildings={payload.buildings}
+            onSaved={() => api.scene(sceneId).then(setPayload)} />
+        )}
+        {payload?.resolved_for_date && (
+          <div className="muted small">
+            当前显示运行快照（{payload.resolved_for_date} 体量，含当时阶段）。
+            <button onClick={() => api.scene(sceneId).then(setPayload)}>返回实时场景</button>
+          </div>
+        )}
         {error && <div className="error">{error}</div>}
         {sunpath && (
           <>
@@ -107,7 +139,7 @@ export default function App() {
       </aside>
       <main>
         <SceneViewer
-          payload={payload} sunpath={sunpath} timeIdx={timeIdx}
+          payload={displayPayload} sunpath={sunpath} timeIdx={timeIdx}
           pointStatus={pointStatus} selectedPointId={selectedPointId}
           highlightOccluder={highlightOccluder}
           onSelectPoint={setSelectedPointId}

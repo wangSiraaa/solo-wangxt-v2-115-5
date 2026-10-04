@@ -21,4 +21,11 @@ export const api = {
   trace: (runId, pointId, time) =>
     req(`/analysis/${runId}/points/${pointId}/trace` + (time ? `?time=${time}` : '')),
   snapshot: (id) => req(`/snapshots/${id}`),
+  stages: (buildingId) => req(`/buildings/${buildingId}/stages`),
+  saveStages: (buildingId, stages) =>
+    req(`/buildings/${buildingId}/stages`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stages }),
+    }),
 }

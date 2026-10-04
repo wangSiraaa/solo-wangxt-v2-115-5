@@ -35,3 +35,11 @@ select, button { padding: 6px; }
 .north-label { color: #ff8a80; font-size: 12px; background: rgba(0,0,0,.5);
   padding: 2px 6px; border-radius: 4px; white-space: nowrap; }
 .trace { font-size: 12px; background: #eef4ff; padding: 8px; border-radius: 6px; }
+.stage-editor { border-top: 1px dashed #ccc; padding-top: 6px; display: flex;
+  flex-direction: column; gap: 6px; }
+.stage-row { display: flex; gap: 4px; align-items: center; }
+.stage-row input[type="date"] { width: 135px; padding: 4px; }
+.stage-row input[type="number"] { width: 64px; padding: 4px; }
+.stage-actions { display: flex; gap: 6px; }
+.stage-label { color: #ffd54f; font-size: 12px; background: rgba(0,0,0,.55);
+  padding: 2px 6px; border-radius: 4px; white-space: nowrap; }

@@ -9,7 +9,7 @@ from datetime import datetime, date
 
 from geoalchemy2 import Geography, Geometry
 from sqlalchemy import (Column, Integer, String, Float, Date, DateTime,
-                        ForeignKey, Text, JSON)
+                        ForeignKey, Text, JSON, UniqueConstraint)
 from sqlalchemy.orm import relationship
 
 from .db import Base
@@ -45,6 +45,27 @@ class Building(Base):
     top_height = Column(Float, nullable=False)
     color = Column(String, default="#9db2c8")
     scene = relationship("Scene", back_populates="buildings")
+    height_stages = relationship(
+        "HeightStage", back_populates="building",
+        cascade="all, delete-orphan", order_by="HeightStage.effective_date")
+
+
+class HeightStage(Base):
+    """建筑高度阶段：自 effective_date（场景本地日期）起采用新的顶高。
+
+    用于模拟"拟建塔楼加高"等随时间变化的体量：分析运行时选取运行日期
+    已生效（effective_date <= run_date）的最新阶段；早于首个阶段的日期
+    继续采用 Building.top_height 原高度。同一建筑生效日期必须唯一。
+    """
+    __tablename__ = "height_stages"
+    __table_args__ = (UniqueConstraint("building_id", "effective_date",
+                                       name="uq_height_stage_building_date"),)
+    id = Column(Integer, primary_key=True)
+    building_id = Column(ForeignKey("buildings.id", ondelete="CASCADE"),
+                         nullable=False, index=True)
+    effective_date = Column(Date, nullable=False)   # 场景本地日期，含当日
+    top_height = Column(Float, nullable=False)      # 自该日期起的顶高（米）
+    building = relationship("Building", back_populates="height_stages")
 
 
 class MeasurePoint(Base):
