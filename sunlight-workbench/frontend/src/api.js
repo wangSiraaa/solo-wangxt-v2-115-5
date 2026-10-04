@@ -9,7 +9,14 @@ async function req(path, options) {
 export const api = {
   scenes: () => req('/scenes'),
   seed: () => req('/scenes/seed', { method: 'POST' }),
-  scene: (id) => req(`/scenes/${id}`),
+  scene: (id, onDate) =>
+    req(`/scenes/${id}` + (onDate ? `?date=${onDate}` : '')),
+  saveStages: (buildingId, stages) =>
+    req(`/buildings/${buildingId}/height-stages`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stages }),
+    }),
   sunpath: (id, date) => req(`/scenes/${id}/sunpath?date=${date}`),
   run: (scene_id, date, step_minutes = 5) =>
     req('/analysis/run', {

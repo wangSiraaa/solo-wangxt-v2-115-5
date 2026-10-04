@@ -9,7 +9,7 @@ from datetime import datetime, date
 
 from geoalchemy2 import Geography, Geometry
 from sqlalchemy import (Column, Integer, String, Float, Date, DateTime,
-                        ForeignKey, Text, JSON)
+                        ForeignKey, Text, JSON, UniqueConstraint)
 from sqlalchemy.orm import relationship
 
 from .db import Base
@@ -45,6 +45,27 @@ class Building(Base):
     top_height = Column(Float, nullable=False)
     color = Column(String, default="#9db2c8")
     scene = relationship("Scene", back_populates="buildings")
+    height_stages = relationship("HeightStage", back_populates="building",
+                                 cascade="all, delete-orphan",
+                                 order_by="HeightStage.effective_date")
+
+
+class HeightStage(Base):
+    """单栋建筑按场景本地日期生效的高度阶段（如塔楼某日加高）。
+
+    每个阶段 = 生效日期 + 当日起采用的顶高；分析运行时按 run_date
+    取「生效日期 <= run_date」中的最新阶段。阶段日期在同一建筑内唯一。
+    """
+    __tablename__ = "height_stages"
+    __table_args__ = (UniqueConstraint("building_id", "effective_date",
+                                       name="uq_height_stage_date"),)
+    id = Column(Integer, primary_key=True)
+    building_id = Column(ForeignKey("buildings.id", ondelete="CASCADE"),
+                         index=True, nullable=False)
+    effective_date = Column(Date, nullable=False)
+    top_height = Column(Float, nullable=False)
+    note = Column(Text, default="")
+    building = relationship("Building", back_populates="height_stages")
 
 
 class MeasurePoint(Base):

@@ -44,6 +44,7 @@ cd frontend && npm install && npm run dev
 | `test_pvlib_known_anchor_equator_equinox` | 赤道春分正午≈90°、日出方位≈正东、夏至正午≈90°−23.44° |
 | `test_interval_folding_handcalc` | 合成布尔序列折叠为连续区间 |
 | `test_winter_summer_shaded_point` | 同一测点冬季日照 < 夏季；逐样本与方位修正后的解析阈值一致 |
+| `test_stages` | 高度阶段：早于首阶段用原高、生效日切换最新阶段；重复日期/非法高度拒绝；生效日前后同窗点遮挡不同；改阶段后旧快照仍为原体量 |
 | `test_api_logic` | 快照结构、几何重建、遮挡物归属 |
 
 种子场景：**S1 邻楼遮挡**（正南板楼+东南塔楼 vs 目标楼，跨冬夏 2026-01-15 / 2026-07-15 对比）与 **S2 旋转场景**（S1 旋转 30°，物理等价，验证旋转口径——同日期结果逐样本一致）。
@@ -52,8 +53,15 @@ cd frontend && npm install && npm run dev
 
 ## 结果追溯
 
-- 每次运行先生成**场景快照**（`snapshots.payload` 含完整几何+坐标基准），结果关联快照 ID，场景后续被编辑不影响追溯（`GET /api/snapshots/{id}`）。
+- 每次运行先生成**场景快照**（`snapshots.payload` 含完整几何+坐标基准+**当日生效的高度阶段口径**），结果关联快照 ID，场景/阶段后续被编辑不影响追溯（`GET /api/snapshots/{id}`）。
 - 每个细样本都记录遮挡物名称/距离/命中点，`GET /api/analysis/{run}/points/{point}/trace[?time=...]` 支持单点追查；前端悬停遮挡时段即高亮对应建筑。
+
+## 单栋建筑高度阶段（模拟某日加高）
+
+- 每栋建筑可维护若干**生效日期＋高度（顶高 m）**记录：`PUT /api/buildings/{id}/height-stages`（整组替换；空列表清除）。同一建筑**生效日期必须唯一**，高度必须为有限正数且不低于 `base_height`，否则返回 400。
+- 分析/预览日期 d 取「`effective_date <= d`」中的**最新阶段**（生效日当天即生效）；**早于首个阶段的日期继续采用建筑原 `top_height`**。未配置阶段的普通建筑行为完全不变。
+- 运行时实际采用的高度与阶段同时写入两处，保证可追查：快照 payload 中每栋建筑的 `effective_top_height`/`active_stage` 与顶层 `height_resolution`，以及 `runs.params.height_resolution`（`GET /api/analysis/{run}` 也直接返回）。
+- 前端按所选日期渲染当日体量（黄色线框标出加高前原体量，琥珀色微染表示有阶段生效），三维场景内叠加阶段说明；运行后切换到快照视图，**修改阶段后旧运行仍可查原体量**。
 
 ## 已知局限（必须阅读）
 
